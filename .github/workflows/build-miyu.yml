@@ -68,7 +68,7 @@ jobs:
         shell: bash
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
-        working-directory: $GITHUB_WORKSPACE/upstream
+        working-directory: upstream
         run: |
           export ANDROID_HOME="$ANDROID_HOME"
           echo "sdk.dir=$ANDROID_HOME" > local.properties
