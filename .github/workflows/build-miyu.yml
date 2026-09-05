@@ -1,0 +1,90 @@
+name: Build Miyu APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout patched files
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - name: Clone upstream
+        shell: bash
+        run: |
+          commit="$(git ls-remote https://github.com/DrKLO/Telegram.git refs/heads/master | cut -f1)"
+          echo "upstream master=$commit"
+          git clone --recursive https://github.com/DrKLO/Telegram.git upstream
+          echo "UPSTREAM_COMMIT=$commit" >> "$GITHUB_ENV"
+
+      - name: Apply Miyu branding patch
+        shell: bash
+        run: |
+          cd upstream
+          git apply --verbose "../miyu_patch.diff" || git apply --reject "../miyu_patch.diff"
+          # report result files exist
+          test -f TMessagesProj/src/main/res/values/strings.xml && echo "strings OK"
+
+      - name: Trim to arm64-v8a only (faster build)
+        shell: bash
+        run: |
+          cd upstream
+          sed -i 's|"armeabi-v7a", "arm64-v8a", "x86", "x86_64"|"arm64-v8a"|g' TMessagesProj_App/build.gradle
+          sed -i 's|"armeabi-v7a", "arm64-v8a", "x86", "x86_64"|"arm64-v8a"|g' TMessagesProj/config/*.gradle 2>/dev/null || true
+          grep -rn "abiFilters" TMessagesProj_App/build.gradle | head
+
+      - name: Ensure submodules are initialized
+        shell: bash
+        run: |
+          cd upstream
+          git submodule update --init --recursive --force 2>&1 | tail -5 || true
+          for p in third_party/xiph/opusfile/src/info.c lib/jlatexmath/jlatexmath/build.gradle; do
+            if [ -f "TMessagesProj/$p" ]; then echo "OK  $p"; else echo "MISSING $p"; fi
+          done
+
+      - name: Build APK (debug)
+        shell: bash
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        working-directory: $GITHUB_WORKSPACE/upstream
+        run: |
+          export ANDROID_HOME="$ANDROID_HOME"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m" >> gradle.properties
+          ./gradlew --no-daemon :TMessagesProj_App:assembleAfatDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: miyu-apk
+          path: |
+            upstream/TMessagesProj_App/build/outputs/apk/*/*.apk
+          if-no-files-found: warn
+
+      - name: Debug list outputs
+        if: always()
+        shell: bash
+        run: |
+          find . -name "*.apk" 2>/dev/null || true
